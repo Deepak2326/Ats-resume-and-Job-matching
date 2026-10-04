@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Local account database (user data — never commit)
+app_users.db
+
+# Streamlit secrets (SMTP credentials)
+.streamlit/secrets.toml
+
+# OS / editor noise
+Thumbs.db
+.vscode/
