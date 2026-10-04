@@ -3,10 +3,10 @@ app.py
 ======
 Streamlit entry point — ATS Resume Analyzer & Job Recommendation Platform.
 
-Features: verified email/password accounts (auth.py, SQLite-backed), resume
+Features: email/password accounts (auth.py, SQLite-backed), resume
 upload (PDF/DOCX) with per-account persistence so returning users never
 re-upload, an ATS score dashboard (heuristics + ML head), live job scraping
-via JobSpy with demo-mode fallback, semantic resume↔JD matching with
+via JobSpy with demo-mode fallback, semantic resume-to-JD matching with
 skill-gap analysis (sentence-transformers with TF-IDF fallback), and course
 recommendations keyed off the identified skill gaps (recommender.py) with
 dual Apply/Upskill actions, score cards and a downloadable analysis summary.
@@ -28,10 +28,7 @@ from auth import (
     create_user,
     delete_resume,
     load_resume,
-    resend_code,
     save_resume,
-    send_verification_email,
-    verify_user,
 )
 from matcher import MatchResult, match_resume_to_job
 from parser import ParsedResume, ResumeParserError, parse_resume
@@ -44,11 +41,10 @@ from scraper import (
 )
 
 # ---------------------------------------------------------------------------
-# Page config & mock auth
+# Page config
 # ---------------------------------------------------------------------------
 st.set_page_config(
     page_title="ATS Resume Analyzer",
-    page_icon="📄",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -72,7 +68,7 @@ def init_session_state() -> None:
         "selected_job": None,      # dict
         "match_result": None,      # MatchResult
         "match_context": None,     # {"filename", "job_url"} staleness check
-        "missing_skills": [],      # list[str] → course engine
+        "missing_skills": [],      # list[str] — feeds the course engine
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -97,90 +93,76 @@ def _restore_saved_resume(email: str) -> None:
 
 
 def login_screen() -> None:
-    st.title("📄 ATS Resume Analyzer & Job Recommendation Platform")
+    """Single clean auth view — Sign In by default, Sign Up one click away.
+    A successful sign-up drops the user straight back on the Sign In form."""
+    st.title("ATS Resume Analyzer & Job Recommendation Platform")
     st.caption(
-        "Create an account or sign in — your resume stays saved to your "
-        "account, so you only ever upload it once."
-    )
-    tab_signin, tab_signup, tab_verify = st.tabs(
-        ["🔑 Sign In", "🆕 Sign Up", "✅ Verify Account"]
+        "Sign in to analyze, match and improve your resume — it stays saved "
+        "to your account, so you only ever upload it once."
     )
 
-    with tab_signin:
-        with st.form("signin_form", clear_on_submit=False):
-            email = st.text_input("Email", key="signin_email")
-            password = st.text_input("Password", type="password",
-                                     key="signin_password")
-            submitted = st.form_submit_button(
-                "Sign In", type="primary", use_container_width=True)
-        if submitted:
-            ok, message = authenticate(email, password)
-            if ok:
-                st.session_state.authenticated = True
-                st.session_state.username = email.strip().lower()
-                _restore_saved_resume(st.session_state.username)
-                st.rerun()
-            else:
-                st.error(message)
+    _left, center, _right = st.columns([1, 1.4, 1])  # narrow centered card
+    with center:
+        if st.session_state.pop("just_signed_up", False):
+            # Reset the switcher so the new user lands on the Sign In form.
+            st.session_state.pop("auth_mode", None)
+            st.success("Account created — sign in with your new credentials.")
 
-    with tab_signup:
-        with st.form("signup_form", clear_on_submit=False):
-            new_email = st.text_input("Email", key="signup_email")
-            pw1 = st.text_input("Password", type="password", key="signup_pw1",
-                                help="Minimum 8 characters.")
-            pw2 = st.text_input("Confirm password", type="password",
-                                key="signup_pw2")
-            submitted = st.form_submit_button(
-                "Create Account", type="primary", use_container_width=True)
-        if submitted:
-            if pw1 != pw2:
-                st.error("Passwords do not match.")
-            else:
-                ok, message, code = create_user(new_email, pw1)
-                if not ok:
-                    st.error(message)
-                elif send_verification_email(new_email, code):
-                    st.success(
-                        "Account created — a 6-digit verification code was "
-                        f"emailed to **{new_email.strip().lower()}**. Open "
-                        "the ✅ Verify Account tab to activate your account."
-                    )
+        mode = st.radio(
+            "Account access",
+            ["Sign In", "Sign Up"],
+            horizontal=True,
+            label_visibility="collapsed",
+            key="auth_mode",
+        )
+
+        if mode == "Sign In":
+            with st.form("signin_form", clear_on_submit=False):
+                email = st.text_input("Email", key="signin_email",
+                                      placeholder="you@example.com")
+                password = st.text_input("Password", type="password",
+                                         key="signin_password",
+                                         placeholder="Your password")
+                submitted = st.form_submit_button(
+                    "Sign In", type="primary", use_container_width=True)
+            if submitted:
+                ok, message = authenticate(email, password)
+                if ok:
+                    st.session_state.authenticated = True
+                    st.session_state.username = email.strip().lower()
+                    _restore_saved_resume(st.session_state.username)
+                    st.rerun()
                 else:
-                    st.info(
-                        "**Dev mode** — no email service is configured, so "
-                        f"here is your verification code: **{code}**. Enter "
-                        "it in the ✅ Verify Account tab."
-                    )
-
-    with tab_verify:
-        with st.form("verify_form", clear_on_submit=False):
-            v_email = st.text_input("Email", key="verify_email")
-            v_code = st.text_input("6-digit verification code",
-                                   key="verify_code", max_chars=6)
-            col_verify, col_resend = st.columns(2)
-            verify_clicked = col_verify.form_submit_button(
-                "Verify Account", type="primary", use_container_width=True)
-            resend_clicked = col_resend.form_submit_button(
-                "Resend Code", use_container_width=True)
-        if verify_clicked:
-            ok, message = verify_user(v_email, v_code)
-            if ok:
-                st.success(f"{message} You can sign in now.")
-            else:
-                st.error(message)
-        if resend_clicked:
-            ok, message, code = resend_code(v_email)
-            if not ok:
-                st.error(message)
-            elif send_verification_email(v_email, code):
-                st.success("A new verification code was emailed to you.")
-            else:
-                st.info(f"**Dev mode** — new verification code: **{code}**")
+                    st.error(message)
+        else:
+            with st.form("signup_form", clear_on_submit=False):
+                new_email = st.text_input("Email", key="signup_email",
+                                          placeholder="you@example.com")
+                pw1 = st.text_input("Password", type="password",
+                                    key="signup_pw1",
+                                    placeholder="Minimum 8 characters",
+                                    help="Minimum 8 characters.")
+                pw2 = st.text_input("Confirm password", type="password",
+                                    key="signup_pw2",
+                                    placeholder="Repeat your password")
+                submitted = st.form_submit_button(
+                    "Create Account", type="primary",
+                    use_container_width=True)
+            if submitted:
+                if pw1 != pw2:
+                    st.error("Passwords do not match.")
+                else:
+                    ok, message = create_user(new_email, pw1)
+                    if not ok:
+                        st.error(message)
+                    else:
+                        st.session_state.just_signed_up = True
+                        st.rerun()
 
 
 def render_sidebar() -> None:
     with st.sidebar:
-        st.header("⚙️ Session")
+        st.header("Session")
         st.success(f"Logged in as **{st.session_state.username}**")
         if st.button("Log out", use_container_width=True):
             st.session_state.authenticated = False
@@ -197,7 +179,7 @@ def render_sidebar() -> None:
             st.rerun()
         st.divider()
         if st.session_state.resume is not None:
-            if st.button("🗑️ Remove Saved Resume", use_container_width=True):
+            if st.button("Remove Saved Resume", use_container_width=True):
                 # Detach the resume from the account AND this session.
                 delete_resume(st.session_state.username)
                 st.session_state.resume = None
@@ -207,7 +189,7 @@ def render_sidebar() -> None:
                 st.session_state.match_context = None
                 st.session_state.missing_skills = []
                 st.rerun()
-        if st.button("🔄 Reset / Analyze Another Resume", use_container_width=True):
+        if st.button("Reset / Analyze Another Resume", use_container_width=True):
             # Keep the login; clear every analysis artifact so the user can
             # restart the pipeline with a fresh resume.
             st.session_state.resume = None
@@ -264,11 +246,11 @@ def render_upload_and_score() -> None:
     report: ATSReport | None = st.session_state.ats_report
     if resume and report:
         st.caption(
-            f"💾 **{resume.filename}** is saved to your account — no need to "
+            f"**{resume.filename}** is saved to your account — no need to "
             "re-upload. Upload a new file above to replace it."
         )
         for warning in resume.extraction_warnings:
-            st.caption(f"⚠️ {warning}")
+            st.caption(f"{warning}")
         _render_report(resume, report)
     else:
         st.info("Upload a resume to see your ATS score, detected skills and improvement tips.")
@@ -357,11 +339,16 @@ def _render_report(resume: ParsedResume, report: ATSReport) -> None:
     st.divider()
     left, right = st.columns(2)
     with left:
-        st.markdown("#### ✅ Resume health checks")
+        st.markdown("#### Resume health checks")
         for label, ok in report.checks.items():
-            st.markdown(f"{'✅' if ok else '❌'}&nbsp;&nbsp;{label}", unsafe_allow_html=True)
+            dot = "#2ea043" if ok else "#cf222e"
+            st.markdown(
+                f"<span style='color:{dot};font-weight:700'>&#9679;</span>"
+                f"&nbsp;&nbsp;{label}",
+                unsafe_allow_html=True,
+            )
     with right:
-        st.markdown("#### 📈 Impact signals")
+        st.markdown("#### Impact signals")
         f = report.features
         r1c1, r1c2 = st.columns(2)
         r1c1.metric("Action verbs", f["action_verb_count"])
@@ -370,20 +357,20 @@ def _render_report(resume: ParsedResume, report: ATSReport) -> None:
         r2c1.metric("Bullet points", f["bullet_count"])
         r2c2.metric("Sections detected", f["sections_present"])
 
-    st.markdown("#### 🗂️ Standard sections")
+    st.markdown("#### Standard sections")
     found = ", ".join(sorted(report.sections_found)) or "none"
     missing = ", ".join(sorted(report.sections_missing)) or "none"
     st.markdown(f"**Found:** {found}")
     st.markdown(f"**Missing:** {missing}")
 
-    st.markdown("#### 🧠 Top extracted skills")
+    st.markdown("#### Top extracted skills")
     _skill_chips(report.skills)
 
-    st.markdown("#### 💡 Improvement suggestions")
+    st.markdown("#### Improvement suggestions")
     for tip in report.feedback:
         st.markdown(f"- {tip}")
 
-    with st.expander("📜 View extracted raw text"):
+    with st.expander("View extracted raw text"):
         preview = resume.text[:5000]
         st.text(preview + ("…" if len(resume.text) > 5000 else ""))
 
@@ -393,18 +380,18 @@ def _render_report(resume: ParsedResume, report: ATSReport) -> None:
 # ---------------------------------------------------------------------------
 def render_job_search() -> None:
     """Search form + interactive results + single-job selection for matching."""
-    st.header("🔎 Live Job Search")
+    st.header("Live Job Search")
 
     # Prefill the search term from the resume analysis (manual override OK).
     report: ATSReport | None = st.session_state.ats_report
     suggested = suggest_job_titles(report.skills if report else None)
     if report:
         st.caption(
-            "💡 Suggested from your resume skills: "
+            "Suggested from your resume skills: "
             + " · ".join(f"**{title}**" for title in suggested)
         )
     else:
-        st.caption("💡 Upload a resume in the first tab for skill-based search suggestions.")
+        st.caption("Upload a resume in the first tab for skill-based search suggestions.")
 
     with st.form("job_search_form", clear_on_submit=False):
         col_term, col_loc = st.columns(2)
@@ -434,7 +421,7 @@ def render_job_search() -> None:
             help="Skip live scraping and use the built-in sample listings.",
         )
 
-        submitted = st.form_submit_button("🔍 Search Jobs", use_container_width=True)
+        submitted = st.form_submit_button("Search Jobs", use_container_width=True)
 
     if submitted:
         if not search_term.strip():
@@ -494,11 +481,11 @@ def _render_job_results(result: JobSearchResult) -> None:
             "job_type": st.column_config.TextColumn("Type"),
             "site": st.column_config.TextColumn("Board"),
             "date_posted": st.column_config.TextColumn("Posted"),
-            "job_url": st.column_config.LinkColumn("Apply", display_text="Open ↗"),
+            "job_url": st.column_config.LinkColumn("Apply", display_text="Open"),
         },
     )
 
-    st.markdown("#### 🎯 Select a job to match against your resume")
+    st.markdown("#### Select a job to match against your resume")
     labels = {
         i: f"{row.job_title} — {row.company} ({row.location})"
         for i, row in df.iterrows()
@@ -530,19 +517,19 @@ def _render_job_results(result: JobSearchResult) -> None:
         st.markdown(f"### {row.job_title}")
         st.markdown(f"**{row.company}** · {row.location} · `{row.job_type}`")
         col_apply, col_meta = st.columns([1, 3])
-        col_apply.link_button("🔗 Apply to this job", row.job_url,
+        col_apply.link_button("Apply to this job", row.job_url,
                               use_container_width=True)
         if description.strip():
             col_meta.caption(
                 f"Description: {len(description):,} characters — ready for "
-                "semantic matching in the 🎯 JD Match tab."
+                "semantic matching in the JD Match tab."
             )
         else:
             col_meta.warning(
-                "⚠️ This listing came back without description text — the "
-                "🎯 JD Match tab will let you paste the JD manually."
+                "This listing came back without description text — the "
+                "JD Match tab will let you paste the JD manually."
             )
-        with st.expander("📄 Full job description", expanded=False):
+        with st.expander("Full job description", expanded=False):
             description = row.description or "_No description returned by this board._"
             st.markdown(description[:6000] + ("…" if len(description) > 6000 else ""))
 
@@ -559,7 +546,7 @@ def main() -> None:
     render_sidebar()
     _inject_css()
     tab_resume, tab_jobs, tab_match, tab_courses = st.tabs(
-        ["📄 Resume & ATS Score", "🔎 Job Search", "🎯 JD Match", "🎓 Courses"]
+        ["Resume & ATS Score", "Job Search", "JD Match", "Courses"]
     )
     with tab_resume:
         render_upload_and_score()
@@ -594,17 +581,17 @@ def _sample_jd() -> str:
 
 
 def render_jd_match() -> None:
-    """Semantic resume↔JD matching UI — unlocked by a job selection."""
-    st.header("🎯 Gap Analysis & Match Score")
+    """Semantic resume-to-JD matching UI — unlocked by a job selection."""
+    st.header("Gap Analysis & Match Score")
 
     resume: ParsedResume | None = st.session_state.resume
     job: dict | None = st.session_state.selected_job
     if resume is None:
-        st.info("Upload a resume in the **📄 Resume & ATS Score** tab first.")
+        st.info("Upload a resume in the **Resume & ATS Score** tab first.")
         return
     if job is None:
         st.info(
-            "Pick a listing in the **🔎 Job Search** tab — its full description "
+            "Pick a listing in the **Job Search** tab — its full description "
             "loads into the matching engine."
         )
         return
@@ -625,14 +612,14 @@ def render_jd_match() -> None:
 
     if not scraped_jd:
         st.error(
-            f"⚠️ **No job description was extracted from "
+            f"**No job description was extracted from "
             f"{job.get('site') or 'the job board'}** — the listing withheld "
             "it (common when detail scraping is rate-limited or blocked)."
         )
         manual_key = f"manual_jd::{job.get('job_url', '')}"
         st.markdown(
-            "**Two ways to fix it:** 1️⃣ open the listing via **Apply ↗**, "
-            "copy the full description and paste it below — or 2️⃣ load the "
+            "**Two ways to fix it:** (1) open the listing via **Apply**, "
+            "copy the full description and paste it below — or (2) load the "
             "built-in sample JD to demo the engine."
         )
         st.text_area(
@@ -642,7 +629,7 @@ def render_jd_match() -> None:
             placeholder="Paste the complete job description here…",
             label_visibility="collapsed",
         )
-        if st.button("✨ Use the built-in sample JD instead"):
+        if st.button("Use the built-in sample JD instead"):
             st.session_state[manual_key] = _sample_jd()
             st.rerun()
         jd_text = (st.session_state.get(manual_key) or "").strip()
@@ -652,29 +639,23 @@ def render_jd_match() -> None:
         jd_source = "manual paste"
 
     with st.expander(
-        f"📄 Job description used for matching — {jd_source} · "
+        f"Job description used for matching — {jd_source} · "
         f"{len(jd_text):,} characters"
     ):
         preview = (jd_text if len(jd_text) <= 6000
                    else jd_text[:6000] + "\n\n… *(preview truncated)*")
         st.markdown(preview)
 
-    fast_mode = st.checkbox(
-        "⚡ Fast mode (TF-IDF) — skip the transformer model",
-        value=False,
-        help=(
-            "Uses scikit-learn TF-IDF cosine instead of all-MiniLM-L6-v2. Handy "
-            "when the embedding model's first-run download (~90 MB) is slow; the "
-            "engine also falls back automatically if the model is unavailable."
-        ),
-    )
-    if st.button("🧠 Analyze Fit", type="primary", use_container_width=True):
+    if st.button("Analyze Fit", type="primary", use_container_width=True):
         with st.spinner(
             "Embedding resume & job description… "
             "(first transformer run downloads the ~90 MB model)"
         ):
             result = match_resume_to_job(
-                resume.text, jd_text, use_transformer=not fast_mode
+                resume.text, jd_text,
+                # TF-IDF fast mode stays available for tests/headless runs via
+                # session state, but is no longer exposed in the UI.
+                use_transformer=not st.session_state.get("fast_mode", False),
             )
         st.session_state.match_result = result
         st.session_state.match_context = {
@@ -705,20 +686,30 @@ def render_jd_match() -> None:
 
 
 def _render_match_result(result: MatchResult, job: dict) -> None:
-    """Score gauge + matched/missing skill columns + actionable feedback."""
+    """Verdict banner + score metrics + matched/missing skills + feedback."""
     score = result.jd_match_score
     if score >= 75:
-        band, icon = "Excellent fit", "🟢"
+        band, color = "Excellent fit", "#2e7d32"
     elif score >= 60:
-        band, icon = "Strong fit", "🟢"
+        band, color = "Strong fit", "#43a047"
     elif score >= 40:
-        band, icon = "Moderate fit", "🟠"
+        band, color = "Moderate fit", "#ef6c00"
     else:
-        band, icon = "Low fit", "🔴"
+        band, color = "Low fit", "#c62828"
+
+    # High-contrast verdict banner — the fit rating is impossible to miss.
+    st.markdown(
+        f"<div style='text-align:center;margin:4px 0 12px'>"
+        f"<span style='display:inline-block;background:{color};color:#ffffff;"
+        f"padding:8px 28px;border-radius:999px;font-size:1.1rem;"
+        f"font-weight:700;letter-spacing:0.4px'>"
+        f"{band} &mdash; {score:.0f}% match</span></div>",
+        unsafe_allow_html=True,
+    )
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("JD-Match Score", f"{score:.1f}%")
-    c2.metric("Fit rating", f"{icon} {band}")
+    c2.metric("Fit rating", band)
     c3.metric("Semantic similarity", f"{result.semantic_similarity:.1f}%")
     c4.metric(
         "Skill coverage",
@@ -735,21 +726,21 @@ def _render_match_result(result: MatchResult, job: dict) -> None:
     st.divider()
     left, right = st.columns(2)
     with left:
-        st.markdown(f"#### ✅ Matched skills ({len(result.matched_skills)})")
+        st.markdown(f"#### Matched skills ({len(result.matched_skills)})")
         _label_chips(
             result.matched_skills,
             bg="#23863633", border="#2ea04366", fg="#3fb950",
             empty="_None of the JD's curated skills detected in your resume._",
         )
     with right:
-        st.markdown(f"#### 🔥 Missing skills — add these ({len(result.missing_skills)})")
+        st.markdown(f"#### Missing skills — add these ({len(result.missing_skills)})")
         _label_chips(
             result.missing_skills,
             bg="#da363322", border="#f8514966", fg="#ff7b72",
-            empty="_None — full skill coverage! 🎉_",
+            empty="_None — full skill coverage!_",
         )
         if result.missing_keywords:
-            st.markdown("**🔑 JD keywords to work into your bullets & summary:**")
+            st.markdown("**JD keywords to work into your bullets & summary:**")
             _label_chips(
                 result.missing_keywords,
                 bg="#bb800922", border="#d2992266", fg="#e3b341",
@@ -760,12 +751,12 @@ def _render_match_result(result: MatchResult, job: dict) -> None:
                 "component of your score."
             )
 
-    st.markdown("#### 💡 Suggestions to improve your match score")
+    st.markdown("#### Suggestions to improve your match score")
     for tip in result.feedback:
         st.markdown(f"- {tip}")
     st.caption(
         "Skill gaps saved — they drive the personalized course "
-        "recommendations in the 🎓 Courses tab."
+        "recommendations in the Courses tab."
     )
 
 
@@ -783,7 +774,7 @@ def _score_glance() -> None:
                       f"Grade {report.grade}")
         else:
             st.metric("Baseline ATS Score", "—",
-                      "upload a resume in the 📄 tab")
+                      "upload a resume in the tab")
     with col_match, st.container(border=True):
         if result is not None:
             st.metric("JD Match Score", f"{result.jd_match_score:.1f}%",
@@ -791,17 +782,17 @@ def _score_glance() -> None:
                       "JD skills covered")
         else:
             st.metric("JD Match Score", "—",
-                      "run Analyze Fit in the 🎯 tab")
+                      "run Analyze Fit in the tab")
 
 
 def _render_action_area(job: dict, result: MatchResult) -> None:
-    """Dual CTA at the bottom of the job review card: apply ↔ upskill."""
+    """Dual CTA at the bottom of the job review card: apply or upskill."""
     st.divider()
-    st.markdown("#### ⚡ Ready? Take action")
+    st.markdown("#### Ready? Take action")
     col_apply, col_upskill = st.columns(2)
     with col_apply:
         st.markdown(
-            _link_button_html("🚀 Apply Now — open the job posting",
+            _link_button_html("Apply Now — open the job posting",
                               job["job_url"], bg="#238636"),
             unsafe_allow_html=True,
         )
@@ -810,26 +801,26 @@ def _render_action_area(job: dict, result: MatchResult) -> None:
         if result.missing_skills:
             st.markdown(
                 _link_button_html(
-                    f"🎓 Enroll & Upskill — bridge "
+                    f"Enroll & Upskill — bridge "
                     f"{len(result.missing_skills)} skill gap(s)",
                     "#courses", bg="#6f42c1", new_tab=False),
                 unsafe_allow_html=True,
             )
             st.caption("Scrolls to your personalized course plan below "
-                       "(also in the 🎓 Courses tab).")
+                       "(also in the Courses tab).")
         else:
-            st.success("No skill gaps — you're ready to apply! 🎉")
+            st.success("No skill gaps — you're ready to apply!")
 
 
 def _render_course_section(skills: list[str], *, anchor: str | None) -> None:
     """"Bridge Your Skill Gap" cards — one bordered row per missing skill,
     up to 3 platform recommendations each (curated picks first, then
-    platform search-link fallbacks). Rendered in both the 🎯 JD Match tab
+    platform search-link fallbacks). Rendered in both the JD Match tab
     (``anchor="courses"``, the Enroll & Upskill scroll target) and the
-    🎓 Courses tab (``anchor=None``)."""
+    Courses tab (``anchor=None``)."""
     if not skills:
         return
-    header = "🎓 Bridge Your Skill Gap: Recommended Courses"
+    header = "Bridge Your Skill Gap: Recommended Courses"
     if anchor:
         st.header(header, anchor=anchor)
     else:
@@ -844,7 +835,7 @@ def _render_course_section(skills: list[str], *, anchor: str | None) -> None:
         grouped.setdefault(rec["skill"], []).append(rec)
     for skill, courses in grouped.items():
         with st.container(border=True):
-            st.markdown(f"#### 🎯 {skill}")
+            st.markdown(f"#### {skill}")
             cols = st.columns(len(courses))
             for col, course in zip(cols, courses):
                 with col:
@@ -853,7 +844,7 @@ def _render_course_section(skills: list[str], *, anchor: str | None) -> None:
                                  bg=color, border=color, fg="#ffffff")
                     st.markdown(f"**{course['course_title']}**")
                     st.markdown(
-                        _link_button_html("🎓 Enroll Now", course["url"],
+                        _link_button_html("Enroll Now", course["url"],
                                           bg=color),
                         unsafe_allow_html=True,
                     )
@@ -910,7 +901,7 @@ def _build_analysis_summary() -> str:
             lines.append(f"       - [{rec['platform']}] {rec['course_title']}")
             lines.append(f"         {rec['url']}")
     else:
-        lines.append("   No skill gaps identified — nothing to recommend. 🎉")
+        lines.append("   No skill gaps identified — nothing to recommend.")
     lines += [
         "", "—",
         "Generated by the ATS Resume Analyzer & Job Recommendation Platform.",
@@ -920,28 +911,28 @@ def _build_analysis_summary() -> str:
 
 def render_courses_tab() -> None:
     """Upskilling dashboard: score glance + course plan + summary."""
-    st.header("🎓 Upskilling Dashboard")
+    st.header("Upskilling Dashboard")
     if st.session_state.resume is None:
         st.info(
-            "Upload a resume in the **📄 Resume & ATS Score** tab, then match "
-            "against a job in **🎯 JD Match** — your personalized course plan "
+            "Upload a resume in the **Resume & ATS Score** tab, then match "
+            "against a job in **JD Match** — your personalized course plan "
             "builds from the identified skill gaps."
         )
         return
 
-    st.subheader("📊 Your scores at a glance")
+    st.subheader("Your scores at a glance")
     _score_glance()
     st.divider()
 
     result: MatchResult | None = st.session_state.match_result
     if result is None:
         st.info(
-            "No JD match yet — pick a job in **🔎 Job Search** and click "
-            "**Analyze Fit** in **🎯 JD Match** to reveal your skill gaps."
+            "No JD match yet — pick a job in **Job Search** and click "
+            "**Analyze Fit** in **JD Match** to reveal your skill gaps."
         )
     elif not result.missing_skills:
         st.success(
-            "Full skill coverage — no gaps to bridge for this job! 🎉 "
+            "Full skill coverage — no gaps to bridge for this job! "
             "Match against another listing to keep benchmarking yourself."
         )
     else:
@@ -949,7 +940,7 @@ def render_courses_tab() -> None:
 
     st.divider()
     st.download_button(
-        "⬇️ Download Analysis Summary",
+        "Download Analysis Summary",
         data=_build_analysis_summary(),
         file_name="ats_analysis_summary.txt",
         mime="text/plain",

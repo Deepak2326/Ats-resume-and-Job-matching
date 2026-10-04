@@ -1,7 +1,7 @@
 """
 test_phase3_ui.py
 =================
-Headless UI regression tests for the Phase 3 "🎯 JD Match" tab, driving the
+Headless UI regression tests for the Phase 3 "JD Match" tab, driving the
 real app through Streamlit's AppTest harness.
 
 Covers the exact failure reported after Phase 3 went live:
@@ -78,10 +78,10 @@ def _find(seq, needle: str):
 
 
 def _analyze(at: AppTest) -> AppTest:
-    """Enable fast TF-IDF mode and click Analyze Fit in one rerun."""
-    fast = _find(at.checkbox, "Fast mode")
-    check("fast-mode checkbox rendered", len(fast) == 1)
-    fast[0].set_value(True)
+    """Force fast TF-IDF mode (hidden from the UI) and click Analyze Fit."""
+    check("fast-mode checkbox hidden from the UI",
+          len(_find(at.checkbox, "Fast mode")) == 0)
+    at.session_state["fast_mode"] = True
     buttons = _find(at.button, "Analyze Fit")
     check("Analyze Fit button rendered", len(buttons) == 1)
     buttons[0].click()

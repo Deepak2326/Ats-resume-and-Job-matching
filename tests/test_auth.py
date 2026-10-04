@@ -1,9 +1,9 @@
 """
 test_auth.py
 ============
-Tests for auth.py (email/password accounts, verification codes, per-account
-resume persistence) plus an AppTest end-to-end run of the auth screen:
-sign-up -> verify -> sign-in -> saved-resume restore across sessions.
+Tests for auth.py (email/password accounts, per-account resume persistence)
+plus an AppTest end-to-end run of the auth screen:
+sign-up -> sign-in -> saved-resume restore across sessions.
 
 The test database is isolated in a temp dir (auth.DB_PATH is monkeypatched
 BEFORE any auth call; AppTest runs in-process, so the patch also covers the
@@ -62,11 +62,9 @@ def _click(at: AppTest, needle: str) -> None:
     btns[0].click()
 
 
-# --- Engine level: accounts & verification -----------------------------------
-ok, msg, code = auth.create_user(EMAIL, PASSWORD)
-check("sign-up succeeds and returns a code", ok and code is not None)
-check("verification code is 6 digits",
-      code is not None and len(code) == 6 and code.isdigit(), code)
+# --- Engine level: accounts ---------------------------------------------------
+ok, msg = auth.create_user(EMAIL, PASSWORD)
+check("sign-up succeeds", ok and "created" in msg.lower())
 check("duplicate email rejected (case-insensitive)",
       auth.create_user("jane.doe@example.com", PASSWORD)[0] is False)
 check("invalid email rejected",
@@ -74,110 +72,141 @@ check("invalid email rejected",
 check("short password rejected (< 8 chars)",
       auth.create_user("fresh@example.com", "short")[0] is False)
 
-ok, msg = auth.authenticate(EMAIL, PASSWORD)
-check("sign-in blocked before verification", not ok and "not verified" in msg)
-wrong = "000000" if code != "000000" else "111111"
-check("wrong code rejected", auth.verify_user(EMAIL, wrong)[0] is False)
-check("correct code verifies the account", auth.verify_user(EMAIL, code)[0])
-check("re-verify is idempotent", auth.verify_user(EMAIL, code)[0])
-check("sign-in succeeds after verification (mixed-case email)",
+check("sign-in works immediately after sign-up (no verification step)",
       auth.authenticate(EMAIL, PASSWORD)[0])
+check("sign-in is case-insensitive on email",
+      auth.authenticate("jane.doe@example.com", PASSWORD)[0])
 check("wrong password rejected",
       auth.authenticate(EMAIL, "wrong-password")[0] is False)
-check("unknown email rejected",
-      auth.authenticate("nobody@example.com", PASSWORD)[0] is False)
+ok, msg = auth.authenticate("nobody@example.com", PASSWORD)
+check("unknown email rejected with a sign-up hint",
+      not ok and "sign up" in msg.lower())
 
+# Rows left over from the verification era must still sign in (auto-migrated).
+_legacy_salt = auth.secrets.token_hex(16)
+with sqlite3.connect(auth.DB_PATH) as conn:
+    conn.execute(
+        "INSERT INTO users (email, password_hash, salt, verified,"
+        " verify_code, created_at) VALUES (?, ?, ?, 0, '123456', ?)",
+        ("legacy@example.com",
+         auth._hash_password("legacy-pass-1", _legacy_salt),
+         _legacy_salt, "2024-01-01T00:00:00"),
+    )
+check("legacy unverified account can sign in (auto-migrated)",
+      auth.authenticate("legacy@example.com", "legacy-pass-1")[0])
 with sqlite3.connect(auth.DB_PATH) as conn:
     row = conn.execute(
-        "SELECT password_hash, salt, verify_code FROM users WHERE email = ?",
+        "SELECT verified, verify_code FROM users"
+        " WHERE email = 'legacy@example.com'").fetchone()
+check("migration activated the account and cleared the code",
+      row == (1, None))
+
+# Password storage
+with sqlite3.connect(auth.DB_PATH) as conn:
+    row = conn.execute(
+        "SELECT password_hash, salt FROM users WHERE email = ?",
         (EMAIL.lower(),)).fetchone()
-check("plaintext password never stored", PASSWORD not in str(row))
-check("verification code cleared after activation", row[2] is None)
+check("password stored as a hash, never plaintext",
+      row is not None and row[0] != PASSWORD and PASSWORD not in row[0])
+check("per-user salt stored alongside the hash",
+      row is not None and len(row[1]) == 32)
 
-ok, _, code1 = auth.create_user("second@example.com", "another-pass-1")
-ok, _, code2 = auth.resend_code("second@example.com")
-check("resend rotates the code", ok and code2 is not None and code2 != code1)
-check("old code invalidated by resend",
-      auth.verify_user("second@example.com", code1)[0] is False)
-check("new code verifies", auth.verify_user("second@example.com", code2)[0])
-check("resend rejected once verified",
-      auth.resend_code("second@example.com")[0] is False)
-
-# --- Engine level: resume persistence -----------------------------------------
+# --- Engine level: per-account resume persistence -----------------------------
 pdf = build_sample_pdf(SAMPLE_RESUME_LINES)
-payload = bytes(pdf) if isinstance(pdf, (bytes, bytearray)) else pdf.getvalue()
-auth.save_resume(EMAIL, "sample_resume.pdf", payload, "parsed text")
+check("no resume saved yet", auth.load_resume(EMAIL) is None)
+auth.save_resume(EMAIL, "sample_resume.pdf", pdf,
+                 "\n".join(SAMPLE_RESUME_LINES))
 saved = auth.load_resume(EMAIL)
-check("resume saved + loads back byte-identical",
-      saved is not None and saved["file_bytes"] == payload
-      and saved["filename"] == "sample_resume.pdf")
-auth.save_resume(EMAIL, "v2.pdf", b"new-bytes", "v2 text")
+check("resume round-trips through the DB",
+      saved is not None and saved["filename"] == "sample_resume.pdf"
+      and saved["file_bytes"] == pdf)
+auth.save_resume(EMAIL, "sample_resume_v2.pdf", pdf, "v2 text")
 saved = auth.load_resume(EMAIL)
-check("re-upload replaces the saved resume",
-      saved is not None and saved["filename"] == "v2.pdf"
-      and saved["file_bytes"] == b"new-bytes")
+check("saving again replaces it (one resume per account)",
+      saved is not None and saved["filename"] == "sample_resume_v2.pdf")
 auth.delete_resume(EMAIL)
 check("delete removes the saved resume", auth.load_resume(EMAIL) is None)
-# restore the real sample for the UI flow below
-auth.save_resume(EMAIL, "sample_resume.pdf", payload, "parsed text")
-check("no SMTP configured -> dev mode (email not sent)",
-      auth.send_verification_email(EMAIL, "123456") is False)
-print("[INFO] auth engine verified")
+auth.save_resume(EMAIL, "sample_resume.pdf", pdf,
+                 "\n".join(SAMPLE_RESUME_LINES))
+check("resume re-saved for the UI run", auth.load_resume(EMAIL) is not None)
 
-# --- UI: auth screen renders ---------------------------------------------------
-at = AppTest.from_file(APP, default_timeout=120)
+# --- UI: auth screen ----------------------------------------------------------
+at = AppTest.from_file(APP, default_timeout=60)
 at.run()
-check("no exception on auth screen", not at.exception)
-check("Sign In / Sign Up / Verify tabs rendered",
-      len(at.tabs) == 3
-      and "Sign In" in str(at.tabs[0].label)
-      and "Sign Up" in str(at.tabs[1].label)
-      and "Verify" in str(at.tabs[2].label))
-check("no phase/roadmap language on the auth screen",
-      not any("phase" in str(m.value).lower() or "roadmap" in str(m.value).lower()
-              for m in at.markdown)
-      and not any("phase" in str(c.value).lower() or "roadmap" in str(c.value).lower()
-                  for c in at.caption))
+check("no exception on first paint", not at.exception)
+check("login view shows the Sign In/Sign Up switcher, no app tabs",
+      len(at.radio) == 1 and len(at.tabs) == 0)
+check("no verification UI anywhere on the auth screen",
+      len([el for el in at.text_input if "verify" in str(el.key)]) == 0)
 
-# --- UI: sign-up via the form (dev mode reveals the code) ----------------------
+# Sign-up: validation first, then success -> straight back to Sign In.
+at.radio[0].set_value("Sign Up")
+at.run()
 _set(at, "signup_email", "ui-user@example.com")
 _set(at, "signup_pw1", "pass-one-123")
 _set(at, "signup_pw2", "pass-two-456")
 _click(at, "Create Account")
 at.run()
-check("mismatched passwords rejected", not at.exception
-      and any("do not match" in str(e.value) for e in at.error))
-
+check("mismatched passwords rejected",
+      any("do not match" in str(e.value) for e in at.error))
 _set(at, "signup_pw1", "pass-one-123")
 _set(at, "signup_pw2", "pass-one-123")
 _click(at, "Create Account")
 at.run()
-check("no exception on sign-up", not at.exception)
-check("dev-mode verification code surfaced",
-      any("Dev mode" in str(i.value) for i in at.info))
-with sqlite3.connect(auth.DB_PATH) as conn:
-    row = conn.execute(
-        "SELECT verify_code FROM users WHERE email = 'ui-user@example.com'"
-    ).fetchone()
-check("account persisted as unverified with a code", row is not None and row[0])
-ui_code = row[0]
-
-_set(at, "verify_email", "ui-user@example.com")
-_set(at, "verify_code", ui_code)
-_click(at, "Verify Account")
-at.run()
-check("account verified via the UI",
-      any("You can sign in now" in str(s.value) for s in at.success))
-check("engine agrees the account is verified",
+check("sign-up lands back on Sign In with a success banner",
+      len([el for el in at.text_input if el.key == "signin_email"]) == 1
+      and any("Account created" in str(s.value) for s in at.success))
+check("switcher reset to Sign In", at.radio[0].value == "Sign In")
+check("no verification step after sign-up",
+      len([el for el in at.text_input if "verify" in str(el.key)]) == 0)
+check("engine agrees the new account can sign in",
       auth.authenticate("ui-user@example.com", "pass-one-123")[0] is True)
 
-# --- UI: sign-in restores the saved resume --------------------------------------
+# Sign-up validation: weak password.
+at.radio[0].set_value("Sign Up")
+at.run()
+_set(at, "signup_email", "weak@example.com")
+_set(at, "signup_pw1", "short")
+_set(at, "signup_pw2", "short")
+_click(at, "Create Account")
+at.run()
+check("weak password rejected at sign-up",
+      any("8 characters" in str(e.value) for e in at.error))
+at.radio[0].set_value("Sign In")
+at.run()
+
+# Sign-in: wrong password, then success.
+_set(at, "signin_email", "ui-user@example.com")
+_set(at, "signin_password", "wrong-pass-999")
+_click(at, "Sign In")
+at.run()
+check("wrong password error, stays logged out",
+      not at.session_state["authenticated"]
+      and any("Incorrect password" in str(e.value) for e in at.error))
+_set(at, "signin_email", "ui-user@example.com")
+_set(at, "signin_password", "pass-one-123")
+_click(at, "Sign In")
+at.run()
+check("sign-in succeeds right after sign-up",
+      at.session_state["authenticated"] is True)
+
+# Sign out, then sign in as the account that has a saved resume.
+_logout = [b for b in at.sidebar.button if "Log out" in str(b.label)]
+check("Log out button rendered", len(_logout) == 1)
+_logout[0].click()
+at.run()
+check("logout returns to the clean auth screen",
+      at.session_state["authenticated"] is False and len(at.tabs) == 0
+      and len(at.radio) == 1)
+
+# --- UI: sign-in restores the saved resume ------------------------------------
 _set(at, "signin_email", EMAIL)
 _set(at, "signin_password", PASSWORD)
 _click(at, "Sign In")
 at.run()
 check("no exception on sign-in", not at.exception)
-check("authenticated after sign-in", at.session_state["authenticated"] is True)
+check("authenticated after sign-in",
+      at.session_state["authenticated"] is True)
 check("username normalised to lowercase email",
       at.session_state["username"] == EMAIL.lower())
 check("4 app tabs after sign-in", len(at.tabs) == 4)
@@ -191,15 +220,16 @@ check("saved-resume caption shown in the upload tab",
 check("roadmap expander gone from the sidebar",
       len(at.sidebar.expander) == 0)
 check("'Remove Saved Resume' button offered when a resume is loaded",
-      len([b for b in at.sidebar.button if "Remove Saved Resume" in str(b.label)]) == 1)
+      len([b for b in at.sidebar.button
+           if "Remove Saved Resume" in str(b.label)]) == 1)
 
-# --- UI: logout, then sign in again -> resume STILL there ------------------------
+# --- UI: logout, then sign in again -> resume STILL there ----------------------
 _click_sidebar = [b for b in at.sidebar.button if "Log out" in str(b.label)]
-check("Log out button rendered", len(_click_sidebar) == 1)
+check("Log out button still rendered", len(_click_sidebar) == 1)
 _click_sidebar[0].click()
 at.run()
-check("logout returns to the auth screen",
-      at.session_state["authenticated"] is False and len(at.tabs) == 3)
+check("second logout returns to the auth screen",
+      at.session_state["authenticated"] is False and len(at.tabs) == 0)
 
 _set(at, "signin_email", EMAIL)
 _set(at, "signin_password", PASSWORD)
@@ -211,4 +241,4 @@ check("resume survives logout + fresh sign-in (account persistence)",
       and at.session_state["resume"].filename == "sample_resume.pdf")
 
 print(f"\n{len(CHECKS)}/{len(CHECKS)} checks passed — "
-      "AUTH VERIFIED (sign-up, verification, persistence).")
+      "AUTH VERIFIED (sign-up, sign-in, persistence).")

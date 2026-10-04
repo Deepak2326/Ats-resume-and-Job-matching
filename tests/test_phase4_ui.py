@@ -6,10 +6,10 @@ Streamlit's AppTest harness with a fully seeded pipeline
 (resume + ATS report + selected job + match result).
 
 Covers:
-  * the 🎓 Courses tab upskilling dashboard — score-glance metric cards
+  * the Courses tab upskilling dashboard — score-glance metric cards
     (Baseline ATS Score / JD Match Score), "Bridge Your Skill Gap" course
     cards with per-platform Enroll Now links (curated + fallback URLs);
-  * the dual-action area at the bottom of the 🎯 job review card —
+  * the dual-action area at the bottom of the job review card —
     "Apply Now" -> job posting URL, "Enroll & Upskill" -> #courses anchor;
   * the "Download Analysis Summary" button and its rendered text payload;
   * the sidebar "Reset / Analyze Another Resume" session reset;
@@ -101,7 +101,7 @@ check("no script exception with full Phase 4 pipeline", not at.exception)
 check("deterministic missing-skills trio drives Phase 4",
       mr.missing_skills == ["Deep Learning", "HIPAA", "PyTorch"])
 
-check("4 tabs incl. 🎓 Courses",
+check("4 tabs incl. Courses",
       len(at.tabs) == 4 and "Courses" in str(at.tabs[3].label))
 check("upskilling dashboard header rendered",
       any("Upskilling Dashboard" in str(h.value) for h in at.header))
@@ -122,7 +122,7 @@ check("external CTAs open in a new tab (target=_blank)", 'target="_blank"' in md
 check("'Enroll & Upskill' CTA scrolls to the #courses anchor",
       'href="#courses"' in md and "Enroll &amp; Upskill" in md)
 check("Enroll Now button per recommendation (9 recs x 2 sections = 18)",
-      md.count("🎓 Enroll Now") == 18, f"got {md.count('🎓 Enroll Now')}")
+      md.count("Enroll Now") == 18, f"got {md.count('Enroll Now')}")
 for rec in recommend_courses(mr.missing_skills):
     check(f"card links to {rec['platform']} for {rec['skill']}",
           rec["url"] in md, rec["url"])
