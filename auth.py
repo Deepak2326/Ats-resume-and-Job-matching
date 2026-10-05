@@ -22,6 +22,7 @@ import os
 import re
 import secrets
 import sqlite3
+import time
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -84,17 +85,33 @@ def _ensure_columns(conn: sqlite3.Connection, table: str,
 
 
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        conn.executescript(_SCHEMA)
-        _ensure_columns(conn, "users", _USERS_COLUMNS)
-        _ensure_columns(conn, "resumes", _RESUMES_COLUMNS)
-        conn.execute(_MIGRATE)
-        conn.commit()
-    except sqlite3.Error:
-        conn.close()
-        raise
-    return conn
+    """Open the DB and bring the schema up to date.
+
+    Retries briefly on transient locks (e.g. a concurrent write from another
+    session or process) so a momentary "database is locked" never surfaces to
+    the user as a failed sign-up/sign-in.
+    """
+    last_exc: sqlite3.Error | None = None
+    for attempt in range(3):
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = sqlite3.connect(DB_PATH, timeout=15)
+            conn.executescript(_SCHEMA)
+            _ensure_columns(conn, "users", _USERS_COLUMNS)
+            _ensure_columns(conn, "resumes", _RESUMES_COLUMNS)
+            conn.execute(_MIGRATE)
+            conn.commit()
+            return conn
+        except sqlite3.Error as exc:
+            last_exc = exc
+            if conn is not None:
+                try:
+                    conn.close()
+                except sqlite3.Error:
+                    pass
+            if attempt < 2:
+                time.sleep(0.3 * (attempt + 1))
+    raise last_exc  # type: ignore[misc]
 
 
 def _normalise(email: str) -> str:
@@ -134,7 +151,7 @@ def create_user(email: str, password: str) -> tuple[bool, str]:
     except sqlite3.IntegrityError:
         return (False,
                 "An account with this email already exists — sign in instead.")
-    except sqlite3.Error:
+    except Exception:  # noqa: BLE001 - auth must never crash the UI
         logger.exception("create_user failed for %s", email)
         return False, _UNAVAILABLE
     return True, "Account created."
@@ -148,7 +165,7 @@ def authenticate(email: str, password: str) -> tuple[bool, str]:
             row = conn.execute(
                 "SELECT password_hash, salt FROM users WHERE email = ?",
                 (email,)).fetchone()
-    except sqlite3.Error:
+    except Exception:  # noqa: BLE001 - auth must never crash the UI
         logger.exception("authenticate failed for %s", email)
         return False, _UNAVAILABLE
     if row is None:

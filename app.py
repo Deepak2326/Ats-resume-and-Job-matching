@@ -98,10 +98,6 @@ def login_screen() -> None:
     """Single clean auth view — Sign In by default, Sign Up one click away.
     A successful sign-up drops the user straight back on the Sign In form."""
     st.title("ATS Resume Analyzer & Job Recommendation Platform")
-    st.caption(
-        "Sign in to analyze, match and improve your resume — it stays saved "
-        "to your account, so you only ever upload it once."
-    )
 
     _left, center, _right = st.columns([1, 1.4, 1])  # narrow centered card
     with center:
@@ -129,7 +125,9 @@ def login_screen() -> None:
                     "Sign In", type="primary", use_container_width=True)
             if submitted:
                 try:
-                    ok, message = authenticate(email, password)
+                    # Index-unpack tolerates any legacy tuple shape.
+                    result = authenticate(email, password)
+                    ok, message = result[0], result[1]
                 except Exception:  # defensive: never show a raw crash
                     ok, message = (False, "Sign-in is temporarily unavailable "
                                           "— please try again.")
@@ -159,7 +157,9 @@ def login_screen() -> None:
                     st.error("Passwords do not match.")
                 else:
                     try:
-                        ok, message = create_user(new_email, pw1)
+                        # Index-unpack tolerates any legacy tuple shape.
+                        result = create_user(new_email, pw1)
+                        ok, message = result[0], result[1]
                     except Exception:  # defensive: never show a raw crash
                         ok, message = (False, "We couldn't create the account "
                                               "just now — please try again.")
