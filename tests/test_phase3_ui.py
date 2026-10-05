@@ -7,7 +7,7 @@ real app through Streamlit's AppTest harness.
 Covers the exact failure reported after Phase 3 went live:
   * a selected listing WITHOUT an extractable description dead-ended the tab
     (no JD shown, no matching). The tab must now surface a recovery path —
-    manual JD paste + built-in sample JD — and match against it;
+    a manual JD paste — and match against it;
   * the results view must include explicit score-improvement suggestions
     (missing skills + JD keywords + feedback tips);
   * the happy path (scraped description present) must agree with the
@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.join(ROOT, "tests"))
 from streamlit.testing.v1 import AppTest          # noqa: E402
 
 from parser import parse_resume                   # noqa: E402
-from scraper import MOCK_JOBS                     # noqa: E402
+from sample_jobs import MOCK_JOBS                 # noqa: E402
 from test_phase1 import SAMPLE_RESUME_LINES, build_sample_pdf  # noqa: E402
 
 APP = os.path.join(ROOT, "app.py")
@@ -95,8 +95,8 @@ def _assert_result(at: AppTest) -> None:
     check("match_result stored in session", mr is not None)
     check("backend is tfidf-fallback (fast mode)",
           mr is not None and mr.backend == "tfidf-fallback", str(mr.backend))
-    check("deterministic JD-match score 39.3%",
-          mr is not None and round(mr.jd_match_score, 1) == 39.3,
+    check("deterministic JD-match score 34.7%",
+          mr is not None and round(mr.jd_match_score, 1) == 34.7,
           f"{mr.jd_match_score:.1f}")
     check("missing skills exact",
           mr is not None and mr.missing_skills == ["Deep Learning", "HIPAA", "PyTorch"])
@@ -122,8 +122,11 @@ check("clear 'no JD extracted' error shown",
       any("No job description was extracted" in str(getattr(e, "value", ""))
           for e in at.error))
 check("manual JD paste box offered", len(at.text_area) >= 1)
-check("sample-JD fallback button offered",
-      len(_find(at.button, "sample JD")) == 1)
+check("no sample-data shortcuts in the UI",
+      len(_find(at.button, "sample JD")) == 0)
+check("paste-to-enable hint shown",
+      any("Paste the job description above" in str(getattr(i, "value", ""))
+          for i in at.info))
 check("Analyze Fit gated until a JD exists",
       len(_find(at.button, "Analyze Fit")) == 0)
 

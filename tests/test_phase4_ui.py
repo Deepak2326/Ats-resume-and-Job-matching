@@ -38,7 +38,7 @@ from ats_scorer import score_resume               # noqa: E402
 from matcher import match_resume_to_job           # noqa: E402
 from parser import parse_resume                   # noqa: E402
 from recommender import recommend_courses         # noqa: E402
-from scraper import MOCK_JOBS                     # noqa: E402
+from sample_jobs import MOCK_JOBS                 # noqa: E402
 from test_phase1 import SAMPLE_RESUME_LINES, build_sample_pdf  # noqa: E402
 
 APP = os.path.join(ROOT, "app.py")
@@ -112,8 +112,8 @@ metrics = {m.label: m.value for m in at.metric}
 check("Baseline ATS Score metric card rendered",
       metrics.get("Baseline ATS Score", "").endswith("/100"),
       metrics.get("Baseline ATS Score", "-"))
-check("JD Match Score metric card = deterministic 39.3%",
-      metrics.get("JD Match Score") == "39.3%", metrics.get("JD Match Score", "-"))
+check("JD Match Score metric card = deterministic 34.7%",
+      metrics.get("JD Match Score") == "34.7%", metrics.get("JD Match Score", "-"))
 
 md = _md(at)
 check("'Apply Now' CTA links to the job posting URL",

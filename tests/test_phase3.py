@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.join(ROOT, "tests"))
 
 import matcher  # noqa: E402
 from matcher import MatchResult, match_resume_to_job, semantic_cosine  # noqa: E402
-from scraper import MOCK_JOBS, scrape_job_listings  # noqa: E402
+from sample_jobs import MOCK_JOBS  # noqa: E402
 from test_phase1 import SAMPLE_RESUME_LINES, build_sample_pdf  # noqa: E402
 from parser import parse_resume  # noqa: E402
 
@@ -163,14 +163,12 @@ def test_e2e_phase123_chain() -> None:
     """Parse -> score -> scrape -> select -> match (the exact app flow)."""
     resume = parse_resume(build_sample_pdf(SAMPLE_RESUME_LINES),
                           filename="sample_resume.pdf")
-    result = scrape_job_listings(
-        site_name=["indeed"], search_term="Machine Learning Engineer",
-        location="United States", results_wanted=5, force_mock=True,
-    )
-    row = result.jobs.iloc[0]
-    selected_job = {"job_title": row.job_title, "company": row.company,
-                    "location": row.location, "job_type": row.job_type,
-                    "job_url": row.job_url, "description": row.description,
+    # Deterministic fixture stands in for the live scrape (tests stay
+    # offline-safe; the app itself always scrapes live boards).
+    row = MOCK_JOBS[0]
+    selected_job = {"job_title": row["job_title"], "company": row["company"],
+                    "location": row["location"], "job_type": row["job_type"],
+                    "job_url": row["job_url"], "description": row["description"],
                     "site": row.get("site", "")}
     match = match_resume_to_job(resume.text, selected_job["description"],
                                 use_transformer=False)

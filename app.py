@@ -6,7 +6,7 @@ Streamlit entry point — ATS Resume Analyzer & Job Recommendation Platform.
 Features: email/password accounts (auth.py, SQLite-backed), resume
 upload (PDF/DOCX) with per-account persistence so returning users never
 re-upload, an ATS score dashboard (heuristics + ML head), live job scraping
-via JobSpy with demo-mode fallback, semantic resume-to-JD matching with
+via JobSpy, semantic resume-to-JD matching with
 skill-gap analysis (sentence-transformers with TF-IDF fallback), and course
 recommendations keyed off the identified skill gaps (recommender.py) with
 dual Apply/Upskill actions, score cards and a downloadable analysis summary.
@@ -51,7 +51,7 @@ st.set_page_config(
 
 @st.cache_resource(show_spinner="Warming up the ATS scoring engine…")
 def load_scorer() -> ATSScorer:
-    """Train/cache the mock RF head once per server process."""
+    """Train/cache the fallback RF head once per server process."""
     return ATSScorer()
 
 
@@ -80,15 +80,17 @@ def init_session_state() -> None:
 def _restore_saved_resume(email: str) -> None:
     """Load the account's saved resume (if any) so returning users can skip
     the upload step entirely — resume + ATS report land straight in session."""
-    saved = load_resume(email)
-    if not saved:
-        return
     try:
+        saved = load_resume(email)
+        if not saved:
+            return
         resume = parse_resume(saved["file_bytes"], filename=saved["filename"])
-    except ResumeParserError:
+        report = load_scorer().score(resume.text)
+    except Exception:
+        # A corrupt or unreadable saved resume must never block sign-in.
         return
     st.session_state.resume = resume
-    st.session_state.ats_report = load_scorer().score(resume.text)
+    st.session_state.ats_report = report
     st.session_state.uploaded_filename = saved["filename"]
 
 
@@ -126,7 +128,11 @@ def login_screen() -> None:
                 submitted = st.form_submit_button(
                     "Sign In", type="primary", use_container_width=True)
             if submitted:
-                ok, message = authenticate(email, password)
+                try:
+                    ok, message = authenticate(email, password)
+                except Exception:  # defensive: never show a raw crash
+                    ok, message = (False, "Sign-in is temporarily unavailable "
+                                          "— please try again.")
                 if ok:
                     st.session_state.authenticated = True
                     st.session_state.username = email.strip().lower()
@@ -152,7 +158,11 @@ def login_screen() -> None:
                 if pw1 != pw2:
                     st.error("Passwords do not match.")
                 else:
-                    ok, message = create_user(new_email, pw1)
+                    try:
+                        ok, message = create_user(new_email, pw1)
+                    except Exception:  # defensive: never show a raw crash
+                        ok, message = (False, "We couldn't create the account "
+                                              "just now — please try again.")
                     if not ok:
                         st.error(message)
                     else:
@@ -411,14 +421,8 @@ def render_job_search() -> None:
         )
         results_wanted = col_n.slider("Number of results", 5, 50, 15, step=5)
 
-        col_hours, col_demo = st.columns(2)
-        hours_old = col_hours.number_input(
+        hours_old = st.number_input(
             "Posted within last N hours (0 = any time)", 0, 720, 0, step=24
-        )
-        force_mock = col_demo.checkbox(
-            "Force demo data (offline testing)",
-            value=False,
-            help="Skip live scraping and use the built-in sample listings.",
         )
 
         submitted = st.form_submit_button("Search Jobs", use_container_width=True)
@@ -427,7 +431,7 @@ def render_job_search() -> None:
         if not search_term.strip():
             st.error("Please enter a search term.")
             return
-        if not sites and not force_mock:
+        if not sites:
             st.error("Please select at least one job board.")
             return
         with st.spinner("Scraping live job boards… this can take up to a minute."):
@@ -438,7 +442,6 @@ def render_job_search() -> None:
                 results_wanted=results_wanted,
                 hours_old=int(hours_old) or None,
                 job_type=JOB_TYPE_OPTIONS[job_type_label],
-                force_mock=force_mock,
             )
         # Session-state contract: jobs_df + selected_job.
         st.session_state.jobs_result = result
@@ -459,10 +462,16 @@ def _render_job_results(result: JobSearchResult) -> None:
     """Interactive results table + selection card feeding the JD matcher."""
     if result.source == "live":
         st.success(result.message)
-    else:
+    elif result.source == "empty":
+        st.info(result.message)
+    else:  # "unavailable"
         st.warning(result.message)
 
     df = result.jobs
+    if df.empty:
+        # "empty"/"unavailable" searches carry no rows — the banner above
+        # already explained what happened.
+        return
     st.markdown(f"#### {len(df)} listings for `{result.search_term}` — {result.location}")
 
     display_cols = [
@@ -561,25 +570,6 @@ def main() -> None:
 # ---------------------------------------------------------------------------
 # Gap analysis & JD-match score
 # ---------------------------------------------------------------------------
-def _sample_jd() -> str:
-    """Built-in demo JD for when the live board withholds description text."""
-    try:
-        demo = scrape_job_listings(
-            "machine learning engineer", results_wanted=3, force_mock=True
-        )
-        description = demo.jobs.iloc[0]["description"]
-        if isinstance(description, str) and description.strip():
-            return description.strip()
-    except Exception:  # pragma: no cover - ultra-defensive UI fallback
-        pass
-    return (
-        "We are hiring a Machine Learning Engineer with strong Python, "
-        "scikit-learn, TensorFlow or PyTorch experience. You will design "
-        "training pipelines, deploy services with Docker on AWS, and "
-        "collaborate with data science and product teams."
-    )
-
-
 def render_jd_match() -> None:
     """Semantic resume-to-JD matching UI — unlocked by a job selection."""
     st.header("Gap Analysis & Match Score")
@@ -603,8 +593,8 @@ def render_jd_match() -> None:
 
     # --- Resolve the JD text ---------------------------------------------
     # Boards frequently return listings with no description (detail fetch
-    # blocked / rate-limited). Recover with a manual paste or the built-in
-    # sample JD instead of dead-ending the tab.
+    # blocked / rate-limited). Recover with a manual paste instead of
+    # dead-ending the tab.
     raw_description = job.get("description")
     scraped_jd = raw_description.strip() if isinstance(raw_description, str) else ""
     jd_text = scraped_jd
@@ -618,9 +608,8 @@ def render_jd_match() -> None:
         )
         manual_key = f"manual_jd::{job.get('job_url', '')}"
         st.markdown(
-            "**Two ways to fix it:** (1) open the listing via **Apply**, "
-            "copy the full description and paste it below — or (2) load the "
-            "built-in sample JD to demo the engine."
+            "**How to fix it:** open the listing via **Apply**, copy the "
+            "full description, and paste it below."
         )
         st.text_area(
             "Job description (paste here)",
@@ -629,12 +618,9 @@ def render_jd_match() -> None:
             placeholder="Paste the complete job description here…",
             label_visibility="collapsed",
         )
-        if st.button("Use the built-in sample JD instead"):
-            st.session_state[manual_key] = _sample_jd()
-            st.rerun()
         jd_text = (st.session_state.get(manual_key) or "").strip()
         if not jd_text:
-            st.info("Paste the JD above (or load the sample) to enable matching.")
+            st.info("Paste the job description above to enable matching.")
             return
         jd_source = "manual paste"
 

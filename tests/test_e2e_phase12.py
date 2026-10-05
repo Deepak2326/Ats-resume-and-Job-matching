@@ -11,9 +11,11 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 
+import pandas as pd                                    # noqa: E402
 from parser import parse_resume                      # noqa: E402
 from ats_scorer import score_resume, suggest_job_titles  # noqa: E402
-from scraper import CRITICAL_COLUMNS, scrape_job_listings  # noqa: E402
+from sample_jobs import MOCK_JOBS                    # noqa: E402
+from scraper import CRITICAL_COLUMNS                 # noqa: E402
 from test_phase1 import SAMPLE_RESUME_LINES, build_sample_pdf  # noqa: E402
 
 PASSED = []
@@ -45,22 +47,17 @@ def main() -> None:
     check("Phase 2 | search-term prefill from skills", len(titles) >= 1,
           str(titles))
 
-    # ---- Phase 2: scrape (deterministic demo mode for CI) -----------------
-    result = scrape_job_listings(
-        site_name=["indeed", "linkedin"],
-        search_term=titles[0],
-        location="United States",
-        results_wanted=10,
-        force_mock=True,  # flip to False for a live-network check
-    )
-    check("Phase 2 | jobs returned", not result.jobs.empty,
-          f"{len(result.jobs)} rows, source={result.source}")
+    # ---- Phase 2: deterministic fixture standing in for a live scrape ------
+    # (the app always scrapes live boards; tests stay offline-safe)
+    jobs_df = pd.DataFrame(MOCK_JOBS)
+    check("Phase 2 | jobs returned", not jobs_df.empty,
+          f"{len(jobs_df)} rows, source=fixture")
     check("Phase 2 | critical columns present",
-          set(CRITICAL_COLUMNS).issubset(result.jobs.columns),
-          ", ".join(result.jobs.columns))
+          set(CRITICAL_COLUMNS).issubset(jobs_df.columns),
+          ", ".join(jobs_df.columns))
 
     # ---- Phase 2 -> 3 handoff: simulate the selectbox pick -----------------
-    row = result.jobs.iloc[0]
+    row = jobs_df.iloc[0]
     selected_job = {
         "job_title": row.job_title,
         "company": row.company,

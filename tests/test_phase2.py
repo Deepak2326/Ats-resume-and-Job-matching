@@ -67,7 +67,7 @@ def test_live_path_via_monkeypatch() -> None:
     print("PASS  scrape_job_listings live path (monkeypatched jobspy)")
 
 
-def test_mock_fallback_on_exception() -> None:
+def test_unavailable_on_exception() -> None:
     def _boom(**kwargs):
         raise RuntimeError("429 rate limited")
 
@@ -78,22 +78,36 @@ def test_mock_fallback_on_exception() -> None:
                                      results_wanted=10)
     finally:
         scraper.scrape_jobs = original
-    assert result.source == "mock-fallback", result.source
-    assert not result.jobs.empty
+    assert result.source == "unavailable", result.source
+    assert result.jobs.empty, "no fabricated listings may be returned"
     assert set(CRITICAL_COLUMNS).issubset(result.jobs.columns)
-    assert (result.jobs["location"] == "Austin, TX").all(), "mock not personalised"
-    print("PASS  mock fallback triggers on jobspy exception")
+    assert "temporarily unavailable" in result.message
+    print("PASS  jobspy exception -> honest 'unavailable' status, zero rows")
 
 
-def test_force_mock_and_job_type_filter() -> None:
-    result = scrape_job_listings([], "anything", "Remote", force_mock=True)
-    assert result.source == "mock-demo"
-    assert (result.jobs["location"] == "Remote").all()
-    contract = scrape_job_listings([], "anything", "Remote",
-                                   job_type="contract", force_mock=True)
-    assert (contract.jobs["job_type"] == "contract").all()
-    assert not contract.jobs.empty, "contract sample listing should survive filter"
-    print("PASS  force-mock demo mode + local job_type filter")
+def test_empty_result_and_job_type_filter() -> None:
+    original = scraper.scrape_jobs
+    scraper.scrape_jobs = lambda **kwargs: pd.DataFrame()  # boards return nothing
+    try:
+        empty = scrape_job_listings(["indeed"], "Data Scientist", "Austin, TX")
+    finally:
+        scraper.scrape_jobs = original
+    assert empty.source == "empty", empty.source
+    assert empty.jobs.empty and "No live listings matched" in empty.message
+
+    scraper.scrape_jobs = lambda **kwargs: _raw_jobspy_style_df()
+    try:
+        fulltime = scrape_job_listings(["indeed"], "Data Scientist", "Austin, TX",
+                                       job_type="fulltime")
+        contract = scrape_job_listings(["indeed"], "Data Scientist", "Austin, TX",
+                                       job_type="contract")
+    finally:
+        scraper.scrape_jobs = original
+    assert fulltime.source == "live"
+    assert (fulltime.jobs["job_type"] == "fulltime").all()
+    # Zero matches for the requested type -> fall back to unfiltered results.
+    assert contract.source == "live" and len(contract.jobs) == 2
+    print("PASS  empty-result status + local job_type filter")
 
 
 def test_suggest_job_titles() -> None:
@@ -111,8 +125,8 @@ def test_suggest_job_titles() -> None:
 def main() -> None:
     test_clean_jobs_dataframe()
     test_live_path_via_monkeypatch()
-    test_mock_fallback_on_exception()
-    test_force_mock_and_job_type_filter()
+    test_unavailable_on_exception()
+    test_empty_result_and_job_type_filter()
     test_suggest_job_titles()
     print("\nAll Phase 2 smoke tests passed.")
 
